@@ -1,0 +1,12 @@
+[Unit]
+Description=Hearth home archive
+After=network.target
+
+[Service]
+ExecStart=/usr/local/bin/hearth -config /etc/hearth/hearth.toml
+WorkingDirectory=/var/lib/hearth
+Restart=on-failure
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

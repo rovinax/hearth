@@ -1,0 +1,12 @@
+bin/
+data/
+web/node_modules/
+*.db
+*.db-wal
+*.db-shm
+hearth.toml
+.idea/
+.vscode/
+*.exe
+*.test
+coverage.out

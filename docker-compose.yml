@@ -1,0 +1,22 @@
+services:
+  hearth:
+    build: .
+    ports:
+      - "8080:8080"
+    environment:
+      HEARTH_DATA_DIR: /data
+      HEARTH_HTTP_ADDR: ":8080"
+      HEARTH_LOG_FORMAT: json
+      HEARTH_ADMIN_USER: ${HEARTH_ADMIN_USER:-}
+      HEARTH_ADMIN_PASSWORD: ${HEARTH_ADMIN_PASSWORD:-}
+    volumes:
+      - hearth-data:/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/healthz"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+
+volumes:
+  hearth-data:

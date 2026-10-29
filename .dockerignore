@@ -1,0 +1,6 @@
+.git
+bin
+data
+*.md
+hearth.toml
+web/node_modules

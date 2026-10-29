@@ -1,0 +1,18 @@
+# 首次启动还需设置 HEARTH_ADMIN_USER 和 HEARTH_ADMIN_PASSWORD。
+http_addr = ":8080"
+data_dir = "data"
+
+[log]
+level = "info"   # debug | info | warn | error
+format = "text"  # text | json
+
+[jobs]
+workers = 1
+poll_interval = "1s"
+
+[auth]
+session_ttl = "168h"
+cookie_secure = false
+
+[upload]
+max_bytes = 2147483648
