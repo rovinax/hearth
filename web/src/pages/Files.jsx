@@ -18,6 +18,17 @@ const filters = [
   ["other", "其他"],
 ];
 
+function collectionKinds(item) {
+  if (item?.mediaKinds?.length) return item.mediaKinds;
+  return item?.mediaKind ? [item.mediaKind] : [];
+}
+
+function kindsLabel(item) {
+  return collectionKinds(item)
+    .map((k) => kindLabel[k] || k)
+    .join("·");
+}
+
 function kindIcon(kind) {
   if (kind === "image" || kind === "video" || kind === "audio") return kind;
   return "file";
@@ -64,12 +75,21 @@ export function Files() {
   const [queryDraft, setQueryDraft] = useState(q);
   const [creating, setCreating] = useState(false);
   const [renaming, setRenaming] = useState(false);
-  const [newKind, setNewKind] = useState(kind || "image");
+  const [picking, setPicking] = useState(false);
+  const [picked, setPicked] = useState([]);
+  const [batchMode, setBatchMode] = useState("");
+  const [newKinds, setNewKinds] = useState([kind || "image"]);
   const [revision, setRevision] = useState(0);
 
   useEffect(() => {
     setQueryDraft(q);
   }, [q]);
+
+  useEffect(() => {
+    setPicked([]);
+    setBatchMode("");
+    setPicking(false);
+  }, [kind, collectionID, fav, trash, q]);
 
   useEffect(() => {
     let gone = false;
@@ -196,7 +216,8 @@ export function Files() {
     try {
       const created = await api.post("/api/collections", {
         name: form.get("name"),
-        mediaKind: newKind,
+        mediaKind: newKinds[0],
+        mediaKinds: newKinds,
       });
       setCreating(false);
       setNotice(`已创建「${created.name}」`);
@@ -328,6 +349,28 @@ export function Files() {
     }
   }
 
+  function togglePick(id) {
+    setBatchMode("");
+    setPicked((prev) => (prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id]));
+  }
+
+  async function runBatch(action, collectionId) {
+    if (picked.length === 0) return;
+    if (action === "delete" && !window.confirm(`删除这 ${picked.length} 个文件？它们会进入最近删除。`)) return;
+    setError("");
+    try {
+      const body = { ids: picked, action };
+      if (action !== "delete") body.collectionId = collectionId;
+      await api.post("/api/files/batch", body);
+      setPicked([]);
+      setBatchMode("");
+      setNotice(action === "delete" ? "已删除" : action === "copy" ? "已复制" : collectionId ? "已收入集" : "已移出集");
+      refresh();
+    } catch (err) {
+      setError(messageOf(err));
+    }
+  }
+
   async function moveFile(file, nextID) {
     setError("");
     try {
@@ -359,14 +402,20 @@ export function Files() {
     }
   }
 
-  const shownCollections = collections.filter((item) => !kind || item.mediaKind === kind);
+  const shownCollections = collections.filter((item) => !kind || collectionKinds(item).includes(kind));
+  const pickedFiles = (files || []).filter((file) => picked.includes(file.id));
+  const pickedKinds = [...new Set(pickedFiles.map((file) => file.mediaKind))];
+  const batchTargets =
+    pickedKinds.length === 1
+      ? collections.filter((item) => collectionKinds(item).includes(pickedKinds[0]))
+      : [];
   const title = q ? "搜索" : fav ? "收藏" : current ? current.name : "文件";
   const subtitle = q
     ? `「${q}」`
     : fav
       ? "只在这里看见你标过的文件，原位置不变。"
       : current
-        ? `${kindLabel[current.mediaKind]} · ${current.ownerName} 创建`
+        ? `${kindsLabel(current)} · ${current.ownerName} 创建`
         : "你的文件，以及别人设为登录后可见的文件。归入集的自己的文件只在集里出现。";
 
   return (
@@ -464,13 +513,28 @@ export function Files() {
         >
           <Icon name={order === "asc" ? "arrowUp" : "arrowDown"} />
         </button>
+        {!trash && (
+          <button
+            type="button"
+            className={picking ? "icon-btn on" : "icon-btn"}
+            aria-label="选择"
+            aria-pressed={picking}
+            onClick={() => {
+              setPicking((open) => !open);
+              setPicked([]);
+              setBatchMode("");
+            }}
+          >
+            <Icon name="check" />
+          </button>
+        )}
       </div>
       {!q && !fav && !trash && !collectionID && (
         <div className="albums">
           {shownCollections.map((item) => (
             <Link key={item.id} className="album" to={`/files?collection=${item.id}`}>
               <span className="album-mark">
-                <Icon name={kindIcon(item.mediaKind)} />
+                <Icon name={kindIcon(collectionKinds(item)[0] || item.mediaKind)} />
               </span>
               <span className="album-name">{item.name}</span>
             </Link>
@@ -481,7 +545,7 @@ export function Files() {
               className="icon-btn add-collection"
               aria-label="新建集"
               onClick={() => {
-                setNewKind(kind || "image");
+                setNewKinds([kind || "image"]);
                 setCreating(true);
               }}
             >
@@ -493,7 +557,7 @@ export function Files() {
       {!q && !fav && !trash && !collectionID && creating && (
         <form className="new-collection" onSubmit={createCollection}>
           <input name="name" aria-label="集名称" placeholder="集名称" required />
-          <div className="kind-picks" role="group" aria-label="集类型">
+          <div className="kind-picks" role="group" aria-label="集类型（可多选）">
             {[
               ["image", "图片", "image"],
               ["video", "视频", "video"],
@@ -503,10 +567,18 @@ export function Files() {
               <button
                 key={value}
                 type="button"
-                className={newKind === value ? "icon-btn on" : "icon-btn"}
+                className={newKinds.includes(value) ? "icon-btn on" : "icon-btn"}
                 aria-label={label}
-                aria-pressed={newKind === value}
-                onClick={() => setNewKind(value)}
+                aria-pressed={newKinds.includes(value)}
+                onClick={() =>
+                  setNewKinds((prev) => {
+                    if (prev.includes(value)) {
+                      const next = prev.filter((k) => k !== value);
+                      return next.length ? next : prev;
+                    }
+                    return [...prev, value];
+                  })
+                }
               >
                 <Icon name={icon} />
               </button>
@@ -524,7 +596,7 @@ export function Files() {
         <article className="group-card album-card">
           <header className="group-head">
             <span className="album-mark">
-              <Icon name={kindIcon(current.mediaKind)} />
+              <Icon name={kindIcon(collectionKinds(current)[0])} />
             </span>
             {renaming ? (
               <form className="group-rename" onSubmit={renameCollection}>
@@ -540,7 +612,7 @@ export function Files() {
               <div className="group-title">
                 <strong>{current.name}</strong>
                 <small>
-                  {kindLabel[current.mediaKind]} · {current.ownerName}
+                  {kindsLabel(current)} · {current.ownerName}
                 </small>
               </div>
             )}
@@ -604,7 +676,7 @@ export function Files() {
             {hits.map((item) => (
               <Link key={item.id} className="album" to={`/files?collection=${item.id}`}>
                 <span className="album-mark">
-                  <Icon name={kindIcon(item.mediaKind)} />
+                  <Icon name={kindIcon(collectionKinds(item)[0] || item.mediaKind)} />
                 </span>
                 <span className="album-name">{item.name}</span>
               </Link>
@@ -640,14 +712,66 @@ export function Files() {
             onMove={moveFile}
             onRestore={restoreFile}
             onPurge={purgeFile}
+            picking={picking && !trash}
+            selected={picked.includes(file.id)}
+            onToggle={togglePick}
           />
         ))}
       </ul>
+      {picking && picked.length > 0 && (
+        <div className="batch-bar">
+          <span>{picked.length}</span>
+          <button
+            type="button"
+            className={batchMode === "move" ? "icon-btn on" : "icon-btn"}
+            aria-label="移动到集"
+            onClick={() => setBatchMode((mode) => (mode === "move" ? "" : "move"))}
+          >
+            <Icon name="folder" />
+          </button>
+          <button
+            type="button"
+            className={batchMode === "copy" ? "icon-btn on" : "icon-btn"}
+            aria-label="复制到集"
+            onClick={() => setBatchMode((mode) => (mode === "copy" ? "" : "copy"))}
+          >
+            <Icon name="copy" />
+          </button>
+          <button type="button" className="icon-btn danger" aria-label="删除" onClick={() => runBatch("delete")}>
+            <Icon name="trash" />
+          </button>
+          <button
+            type="button"
+            className="icon-btn"
+            aria-label="取消选择"
+            onClick={() => {
+              setPicked([]);
+              setBatchMode("");
+            }}
+          >
+            <Icon name="x" />
+          </button>
+          {batchMode && (
+            <div className="batch-pop">
+              <button type="button" onClick={() => runBatch(batchMode, null)}>
+                首页
+              </button>
+              {pickedKinds.length > 1 && <p>类型要一致才能收入同一个集</p>}
+              {batchTargets.map((item) => (
+                <button key={item.id} type="button" onClick={() => runBatch(batchMode, item.id)}>
+                  <Icon name={kindIcon(collectionKinds(item)[0] || item.mediaKind)} />
+                  <span>{item.name}</span>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
     </section>
   );
 }
 
-function FileTile({ file, collections, linkTo, trash, onFavorite, onRename, onMove, onRestore, onPurge }) {
+function FileTile({ file, collections, linkTo, trash, onFavorite, onRename, onMove, onRestore, onPurge, picking, selected, onToggle }) {
   const [editing, setEditing] = useState(false);
   const [moving, setMoving] = useState(false);
   const [name, setName] = useState(file.name);
@@ -675,8 +799,21 @@ function FileTile({ file, collections, linkTo, trash, onFavorite, onRename, onMo
 
   return (
     <li className="tile-wrap">
-      <div className={cover || pdf ? "preview" : `preview plain kind-${file.mediaKind}`}>
-        <Link className="tile" to={linkTo}>
+      <div className={`${cover || pdf ? "preview" : `preview plain kind-${file.mediaKind}`}${selected ? " is-picked" : ""}`}>
+        {picking && (
+          <span className={selected ? "pick-mark on" : "pick-mark"}>
+            {selected && <Icon name="check" />}
+          </span>
+        )}
+        <Link
+          className="tile"
+          to={linkTo}
+          onClick={(event) => {
+            if (!picking) return;
+            event.preventDefault();
+            onToggle(file.id);
+          }}
+        >
           {cover ? <img src={cover} alt="" /> : pdf ? <PdfCover url={file.contentUrl}>{card}</PdfCover> : card}
           {(cover || pdf) && (
             <span className="tile-caption">
@@ -740,7 +877,7 @@ function FileTile({ file, collections, linkTo, trash, onFavorite, onRename, onMo
                 className={item.id === file.collectionId ? "on" : ""}
                 onClick={() => item.id !== file.collectionId && onMove(file, item.id)}
               >
-                <Icon name={kindIcon(item.mediaKind)} />
+                <Icon name={kindIcon(collectionKinds(item)[0] || item.mediaKind)} />
                 <span>{item.name}</span>
               </button>
             ))}

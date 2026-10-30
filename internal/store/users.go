@@ -8,18 +8,25 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"hearth/internal/auth"
 )
 
+const userCols = `id, username, role, disabled, created_at, display_name, bio, theme, avatar_rel`
+
 var usernameRE = regexp.MustCompile(`^[a-z0-9_-]{3,32}$`)
 
 type User struct {
-	ID        int64
-	Username  string
-	Role      string
-	Disabled  bool
-	CreatedAt string
+	ID          int64
+	Username    string
+	Role        string
+	Disabled    bool
+	CreatedAt   string
+	DisplayName string
+	Bio         string
+	Theme       string
+	AvatarRel   string
 }
 
 func NormalizeUsername(username string) (string, error) {
@@ -80,7 +87,7 @@ RETURNING id`, username, passwordHash, role).Scan(&id)
 
 func (s *Store) UserByID(ctx context.Context, id int64) (User, error) {
 	row := s.db.QueryRowContext(ctx, `
-SELECT id, username, role, disabled, created_at
+SELECT `+userCols+`
 FROM users WHERE id = ?`, id)
 	return scanUser(row)
 }
@@ -94,9 +101,10 @@ func (s *Store) UserByUsername(ctx context.Context, username string) (User, stri
 	var disabled int
 	var hash string
 	err = s.db.QueryRowContext(ctx, `
-SELECT id, username, role, disabled, created_at, password_hash
+SELECT `+userCols+`, password_hash
 FROM users WHERE username = ?`, username).Scan(
-		&user.ID, &user.Username, &user.Role, &disabled, &user.CreatedAt, &hash,
+		&user.ID, &user.Username, &user.Role, &disabled, &user.CreatedAt,
+		&user.DisplayName, &user.Bio, &user.Theme, &user.AvatarRel, &hash,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return User{}, "", ErrNotFound
@@ -110,7 +118,7 @@ FROM users WHERE username = ?`, username).Scan(
 
 func (s *Store) ListUsers(ctx context.Context) ([]User, error) {
 	rows, err := s.db.QueryContext(ctx, `
-SELECT id, username, role, disabled, created_at
+SELECT `+userCols+`
 FROM users
 ORDER BY id`)
 	if err != nil {
@@ -141,6 +149,64 @@ func (s *Store) SetPassword(ctx context.Context, id int64, passwordHash string) 
 		return ErrNotFound
 	}
 	return nil
+}
+
+func (s *Store) UpdateProfile(ctx context.Context, id int64, displayName, bio, theme string) (User, error) {
+	displayName, err := cleanProfileText(displayName, 40)
+	if err != nil {
+		return User{}, err
+	}
+	bio, err = cleanProfileText(bio, 160)
+	if err != nil {
+		return User{}, err
+	}
+	switch theme {
+	case "", "pine", "dusk", "sand", "sea", "sakura":
+	default:
+		return User{}, fmt.Errorf("%w: theme", ErrInvalid)
+	}
+	res, err := s.db.ExecContext(ctx, `
+UPDATE users SET display_name = ?, bio = ?, theme = ? WHERE id = ?`, displayName, bio, theme, id)
+	if err != nil {
+		return User{}, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return User{}, err
+	}
+	if n == 0 {
+		return User{}, ErrNotFound
+	}
+	return s.UserByID(ctx, id)
+}
+
+func (s *Store) SetAvatar(ctx context.Context, id int64, rel string) (User, error) {
+	res, err := s.db.ExecContext(ctx, `UPDATE users SET avatar_rel = ? WHERE id = ?`, rel, id)
+	if err != nil {
+		return User{}, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return User{}, err
+	}
+	if n == 0 {
+		return User{}, ErrNotFound
+	}
+	return s.UserByID(ctx, id)
+}
+
+func cleanProfileText(value string, max int) (string, error) {
+	value = strings.TrimSpace(value)
+	value = strings.Map(func(r rune) rune {
+		if r < 32 {
+			return -1
+		}
+		return r
+	}, value)
+	if utf8.RuneCountInString(value) > max {
+		return "", fmt.Errorf("%w: profile", ErrInvalid)
+	}
+	return value, nil
 }
 
 func (s *Store) SetDisabled(ctx context.Context, id int64, disabled bool) error {
@@ -194,7 +260,10 @@ SELECT COUNT(*) FROM users WHERE role = 'admin' AND disabled = 0`).Scan(&n)
 func scanUser(row scanner) (User, error) {
 	var user User
 	var disabled int
-	err := row.Scan(&user.ID, &user.Username, &user.Role, &disabled, &user.CreatedAt)
+	err := row.Scan(
+		&user.ID, &user.Username, &user.Role, &disabled, &user.CreatedAt,
+		&user.DisplayName, &user.Bio, &user.Theme, &user.AvatarRel,
+	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return User{}, ErrNotFound
 	}

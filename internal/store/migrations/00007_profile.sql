@@ -1,0 +1,13 @@
+-- +goose Up
+
+ALTER TABLE users ADD COLUMN display_name TEXT NOT NULL DEFAULT '';
+ALTER TABLE users ADD COLUMN bio TEXT NOT NULL DEFAULT '';
+ALTER TABLE users ADD COLUMN theme TEXT NOT NULL DEFAULT '';
+ALTER TABLE users ADD COLUMN avatar_rel TEXT NOT NULL DEFAULT '';
+
+-- +goose Down
+
+ALTER TABLE users DROP COLUMN avatar_rel;
+ALTER TABLE users DROP COLUMN theme;
+ALTER TABLE users DROP COLUMN bio;
+ALTER TABLE users DROP COLUMN display_name;

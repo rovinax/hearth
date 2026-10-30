@@ -1,4 +1,4 @@
-.PHONY: build run test tidy docker sqlc web
+.PHONY: build run test tidy docker sqlc web mcp hearth-mcp
 
 VERSION ?= dev
 LDFLAGS := -s -w -X hearth/internal/buildinfo.Version=$(VERSION)
@@ -23,3 +23,6 @@ sqlc:
 
 docker:
 	docker build -t hearth:dev .
+
+mcp hearth-mcp:
+	CGO_ENABLED=0 go build -trimpath -ldflags "$(LDFLAGS)" -o bin/hearth-mcp ./cmd/hearth-mcp

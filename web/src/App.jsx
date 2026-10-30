@@ -8,7 +8,7 @@ import { FileView } from "./pages/FileView.jsx";
 import { Files } from "./pages/Files.jsx";
 import { Groups } from "./pages/Groups.jsx";
 import { Login } from "./pages/Login.jsx";
-import { Password } from "./pages/Password.jsx";
+import { Profile } from "./pages/Profile.jsx";
 import { Share } from "./pages/Share.jsx";
 
 const AuthContext = createContext(null);
@@ -51,7 +51,11 @@ function AuthProvider({ children }) {
     setUser(null);
   }
 
-  return <AuthContext.Provider value={{ user, login, logout }}>{children}</AuthContext.Provider>;
+  useEffect(() => {
+    document.documentElement.dataset.theme = user?.theme || "";
+  }, [user]);
+
+  return <AuthContext.Provider value={{ user, setUser, login, logout }}>{children}</AuthContext.Provider>;
 }
 
 function RequireUser() {
@@ -107,17 +111,17 @@ function Layout() {
                 </NavLink>
               </>
             )}
-            <NavLink to="/account/password">
-              <Icon name="key" />
-              密码
+            <NavLink to="/account">
+              <Icon name="user" />
+              我的
             </NavLink>
           </nav>
         </div>
         <div className="side-foot">
-          <span className="avatar">{initial}</span>
+          {user?.avatarUrl ? <img className="avatar" src={user.avatarUrl} alt="" /> : <span className="avatar">{initial}</span>}
           <span className="who">
-            <strong>{user?.username}</strong>
-            <small>{user?.role === "admin" ? "管理员" : "用户"}</small>
+            <strong>{user?.displayName || user?.username}</strong>
+            <small>{user?.displayName ? user.username : user?.role === "admin" ? "管理员" : "用户"}</small>
           </span>
           <button type="button" className="icon-btn" onClick={onLogout} title="退出">
             <Icon name="logout" />
@@ -143,7 +147,8 @@ export function App() {
             <Route path="/files" element={<Files />} />
             <Route path="/groups" element={<Groups />} />
             <Route path="/files/:id" element={<FileView />} />
-            <Route path="/account/password" element={<Password />} />
+            <Route path="/account" element={<Profile />} />
+            <Route path="/account/password" element={<Navigate to="/account" replace />} />
             <Route element={<RequireAdmin />}>
               <Route path="/admin/users" element={<AdminUsers />} />
               <Route path="/admin/files" element={<AdminFiles />} />

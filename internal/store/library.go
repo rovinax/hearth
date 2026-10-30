@@ -10,14 +10,15 @@ import (
 )
 
 type Collection struct {
-	ID        int64
-	OwnerID   int64
-	OwnerName string
-	Name      string
-	MediaKind string
-	CreatedAt string
-	Users     []User
-	Groups    []GroupRef
+	ID         int64
+	OwnerID    int64
+	OwnerName  string
+	Name       string
+	MediaKind  string
+	MediaKinds []string
+	CreatedAt  string
+	Users      []User
+	Groups     []GroupRef
 }
 
 type Group struct {
@@ -118,19 +119,20 @@ WHERE user_id = ? AND file_id IN (`+strings.Join(holders, ",")+`)`, args...)
 	return nil
 }
 
-func (s *Store) CreateCollection(ctx context.Context, owner User, name, kind string) (Collection, error) {
+func (s *Store) CreateCollection(ctx context.Context, owner User, name string, kinds []string) (Collection, error) {
 	name, err := cleanLabel(name, 40)
 	if err != nil {
 		return Collection{}, err
 	}
-	if !validKind(kind) {
-		return Collection{}, fmt.Errorf("%w: media kind", ErrInvalid)
+	kinds, err = normalizeKinds(kinds)
+	if err != nil {
+		return Collection{}, err
 	}
 	var id int64
 	err = s.db.QueryRowContext(ctx, `
-INSERT INTO collections (owner_id, name, media_kind)
-VALUES (?, ?, ?)
-RETURNING id`, owner.ID, name, kind).Scan(&id)
+INSERT INTO collections (owner_id, name, media_kind, media_kinds)
+VALUES (?, ?, ?, ?)
+RETURNING id`, owner.ID, name, kinds[0], joinKinds(kinds)).Scan(&id)
 	if err != nil {
 		return Collection{}, err
 	}
@@ -142,12 +144,12 @@ func (s *Store) ListCollections(ctx context.Context, viewer User, kind string) (
 		return nil, fmt.Errorf("%w: media kind", ErrInvalid)
 	}
 	rows, err := s.db.QueryContext(ctx, `
-SELECT c.id, c.owner_id, u.username, c.name, c.media_kind, c.created_at
+SELECT c.id, c.owner_id, u.username, c.name, c.media_kind, c.media_kinds, c.created_at
 FROM collections c
 JOIN users u ON u.id = c.owner_id
 WHERE `+memberWhere("c")+`
-  AND (? = '' OR c.media_kind = ?)
-ORDER BY c.id DESC`, viewer.ID, viewer.ID, viewer.ID, kind, kind)
+  AND (? = '' OR c.media_kind = ? OR (',' || c.media_kinds || ',') LIKE '%,' || ? || ',%')
+ORDER BY c.id DESC`, viewer.ID, viewer.ID, viewer.ID, kind, kind, kind)
 	if err != nil {
 		return nil, err
 	}
@@ -172,7 +174,7 @@ func (s *Store) GetCollection(ctx context.Context, id int64, viewer User) (Colle
 		return Collection{}, ErrNotFound
 	}
 	row := s.db.QueryRowContext(ctx, `
-SELECT c.id, c.owner_id, u.username, c.name, c.media_kind, c.created_at
+SELECT c.id, c.owner_id, u.username, c.name, c.media_kind, c.media_kinds, c.created_at
 FROM collections c
 JOIN users u ON u.id = c.owner_id
 WHERE c.id = ?`, id)
@@ -350,8 +352,8 @@ func (s *Store) SetFileCollection(ctx context.Context, actor User, fileID int64,
 		}
 		return s.fileForActor(ctx, fileID, actor)
 	}
-	var kind string
-	err = s.db.QueryRowContext(ctx, `SELECT media_kind FROM collections WHERE id = ?`, collectionID).Scan(&kind)
+	var kind, kindsCSV string
+	err = s.db.QueryRowContext(ctx, `SELECT media_kind, media_kinds FROM collections WHERE id = ?`, collectionID).Scan(&kind, &kindsCSV)
 	if errors.Is(err, sql.ErrNoRows) {
 		return File{}, ErrNotFound
 	}
@@ -365,7 +367,7 @@ func (s *Store) SetFileCollection(ctx context.Context, actor User, fileID int64,
 	if !member {
 		return File{}, ErrForbidden
 	}
-	if kind != file.MediaKind {
+	if !allowsKind(splitKinds(kind, kindsCSV), file.MediaKind) {
 		return File{}, fmt.Errorf("%w: media kind", ErrInvalid)
 	}
 	if file.CollectionID != 0 && file.CollectionID != collectionID {
@@ -381,6 +383,47 @@ func (s *Store) SetFileCollection(ctx context.Context, actor User, fileID int64,
 		return File{}, err
 	}
 	return s.fileForActor(ctx, fileID, actor)
+}
+
+func (s *Store) CopyFile(ctx context.Context, actor User, fileID, collectionID int64) (File, error) {
+	file, err := s.OpenFile(ctx, fileID, actor)
+	if err != nil {
+		return File{}, err
+	}
+	if err := errIfDeleted(file); err != nil {
+		return File{}, err
+	}
+	var collection any
+	if collectionID != 0 {
+		var kind, kindsCSV string
+		err = s.db.QueryRowContext(ctx, `SELECT media_kind, media_kinds FROM collections WHERE id = ?`, collectionID).Scan(&kind, &kindsCSV)
+		if errors.Is(err, sql.ErrNoRows) {
+			return File{}, ErrNotFound
+		}
+		if err != nil {
+			return File{}, err
+		}
+		member, err := isMember(ctx, s.db, collectionID, actor.ID)
+		if err != nil {
+			return File{}, err
+		}
+		if !member {
+			return File{}, ErrForbidden
+		}
+		if !allowsKind(splitKinds(kind, kindsCSV), file.MediaKind) {
+			return File{}, fmt.Errorf("%w: media kind", ErrInvalid)
+		}
+		collection = collectionID
+	}
+	var id int64
+	err = s.db.QueryRowContext(ctx, `
+INSERT INTO files (owner_id, blob_id, name, media_kind, mime, visibility, taken_at, thumb_rel, collection_id)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+RETURNING id`, actor.ID, file.BlobID, file.Name, file.MediaKind, file.Mime, VisPrivate, file.TakenAt, file.ThumbRel, collection).Scan(&id)
+	if err != nil {
+		return File{}, err
+	}
+	return s.fileForActor(ctx, id, actor)
 }
 
 func (s *Store) fileForActor(ctx context.Context, id int64, actor User) (File, error) {
@@ -455,18 +498,43 @@ func (s *Store) Search(ctx context.Context, viewer User, query, sortKey, order s
 	if utf8.RuneCountInString(query) > 200 {
 		query = string([]rune(query)[:200])
 	}
-	orderBy, err := fileOrder(sortKey, order, "f.created_at")
+	match, err := buildFTSQuery(query)
 	if err != nil {
 		return nil, nil, err
 	}
-	pattern := likeContains(query)
 	admin := 0
 	if viewer.Role == RoleAdmin {
 		admin = 1
 	}
+
+	var orderSQL string
+	var orderArgs []any
+	if sortKey == "" {
+		// Prefer exact name, then prefix, then loose contains; bm25 breaks ties.
+		orderSQL = `
+CASE
+  WHEN f.name = ? COLLATE NOCASE THEN 0
+  WHEN f.name LIKE ? ESCAPE '\' THEN 1
+  WHEN f.name LIKE ? ESCAPE '\' THEN 2
+  ELSE 3
+END ASC,
+bm25(files_fts) ASC,
+f.created_at DESC, f.id DESC`
+		orderArgs = []any{query, likePrefix(query), likeContains(query)}
+	} else {
+		orderSQL, err = fileOrder(sortKey, order, "f.created_at")
+		if err != nil {
+			return nil, nil, err
+		}
+	}
+
+	fileArgs := []any{match, admin, viewer.ID, viewer.ID, viewer.ID, viewer.ID}
+	fileArgs = append(fileArgs, orderArgs...)
+	fileArgs = append(fileArgs, searchFileLimit)
 	files, err := s.queryFiles(ctx, viewer, fileSelect+`
+JOIN files_fts ON files_fts.rowid = f.id
 WHERE f.deleted_at = ''
-  AND f.name LIKE ? ESCAPE '\'
+  AND files_fts MATCH ?
   AND (
     ? = 1 OR f.owner_id = ? OR f.visibility = 'shared'
     OR EXISTS (
@@ -474,17 +542,29 @@ WHERE f.deleted_at = ''
       WHERE c.id = f.collection_id AND `+memberWhere("c")+`
     )
   )
-ORDER BY `+orderBy, pattern, admin, viewer.ID, viewer.ID, viewer.ID, viewer.ID)
+ORDER BY `+orderSQL+`
+LIMIT ?`, fileArgs...)
 	if err != nil {
 		return nil, nil, err
 	}
+
 	rows, err := s.db.QueryContext(ctx, `
-SELECT c.id, c.owner_id, u.username, c.name, c.media_kind, c.created_at
+SELECT c.id, c.owner_id, u.username, c.name, c.media_kind, c.media_kinds, c.created_at
 FROM collections c
 JOIN users u ON u.id = c.owner_id
-WHERE c.name LIKE ? ESCAPE '\'
+JOIN collections_fts ON collections_fts.rowid = c.id
+WHERE collections_fts MATCH ?
   AND `+memberWhere("c")+`
-ORDER BY c.name COLLATE NOCASE ASC, c.id ASC`, pattern, viewer.ID, viewer.ID, viewer.ID)
+ORDER BY
+  CASE
+    WHEN c.name = ? COLLATE NOCASE THEN 0
+    WHEN c.name LIKE ? ESCAPE '\' THEN 1
+    WHEN c.name LIKE ? ESCAPE '\' THEN 2
+    ELSE 3
+  END ASC,
+  bm25(collections_fts) ASC,
+  c.name COLLATE NOCASE ASC, c.id ASC
+LIMIT ?`, match, viewer.ID, viewer.ID, viewer.ID, query, likePrefix(query), likeContains(query), searchCollectionLimit)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -750,7 +830,7 @@ func (s *Store) RemoveGroupMember(ctx context.Context, id, userID int64, actor U
 
 func (s *Store) collectionUsers(ctx context.Context, id int64) ([]User, error) {
 	rows, err := s.db.QueryContext(ctx, `
-SELECT u.id, u.username, u.role, u.disabled, u.created_at
+SELECT u.id, u.username, u.role, u.disabled, u.created_at, u.display_name, u.bio, u.theme, u.avatar_rel
 FROM collection_users cu
 JOIN users u ON u.id = cu.user_id
 WHERE cu.collection_id = ?
@@ -862,8 +942,76 @@ func memberWhere(alias string) string {
 
 func scanCollection(row scanner) (Collection, error) {
 	var item Collection
-	err := row.Scan(&item.ID, &item.OwnerID, &item.OwnerName, &item.Name, &item.MediaKind, &item.CreatedAt)
-	return item, err
+	var kindsCSV string
+	err := row.Scan(&item.ID, &item.OwnerID, &item.OwnerName, &item.Name, &item.MediaKind, &kindsCSV, &item.CreatedAt)
+	if err != nil {
+		return Collection{}, err
+	}
+	item.MediaKinds = splitKinds(item.MediaKind, kindsCSV)
+	if item.MediaKind == "" && len(item.MediaKinds) > 0 {
+		item.MediaKind = item.MediaKinds[0]
+	}
+	return item, nil
+}
+
+func normalizeKinds(kinds []string) ([]string, error) {
+	seen := map[string]bool{}
+	out := make([]string, 0, len(kinds))
+	for _, kind := range kinds {
+		kind = strings.TrimSpace(kind)
+		if kind == "" {
+			continue
+		}
+		if !validKind(kind) {
+			return nil, fmt.Errorf("%w: media kind", ErrInvalid)
+		}
+		if seen[kind] {
+			continue
+		}
+		seen[kind] = true
+		out = append(out, kind)
+	}
+	if len(out) == 0 {
+		return nil, fmt.Errorf("%w: media kind", ErrInvalid)
+	}
+	return out, nil
+}
+
+func joinKinds(kinds []string) string {
+	return strings.Join(kinds, ",")
+}
+
+func splitKinds(primary, csv string) []string {
+	if strings.TrimSpace(csv) == "" {
+		if primary == "" {
+			return nil
+		}
+		return []string{primary}
+	}
+	parts := strings.Split(csv, ",")
+	out := make([]string, 0, len(parts))
+	seen := map[string]bool{}
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" || seen[part] {
+			continue
+		}
+		seen[part] = true
+		out = append(out, part)
+	}
+	if len(out) == 0 && primary != "" {
+		return []string{primary}
+	}
+	return out
+}
+
+func allowsKind(kinds []string, kind string) bool {
+	for _, item := range kinds {
+		if item == kind {
+			return true
+		}
+	}
+	return false
 }
 
 func cleanLabel(name string, max int) (string, error) {
@@ -898,6 +1046,42 @@ func fileOrder(sortKey, order, added string) (string, error) {
 }
 
 func likeContains(query string) string {
+	return "%" + likeEscape(query) + "%"
+}
+
+func likePrefix(query string) string {
+	return likeEscape(query) + "%"
+}
+
+func likeEscape(query string) string {
 	replacer := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
-	return "%" + replacer.Replace(query) + "%"
+	return replacer.Replace(query)
+}
+
+const (
+	searchFileLimit       = 200
+	searchCollectionLimit = 50
+)
+
+// buildFTSQuery turns a user query into an FTS5 MATCH expression.
+// Each whitespace-separated token must match (AND). Tokens are prefix-matched
+// so English stems and Chinese character prefixes work with unicode61.
+func buildFTSQuery(query string) (string, error) {
+	tokens := strings.Fields(query)
+	if len(tokens) == 0 {
+		return "", fmt.Errorf("%w: query", ErrInvalid)
+	}
+	parts := make([]string, 0, len(tokens))
+	for _, tok := range tokens {
+		tok = strings.TrimSpace(tok)
+		if tok == "" {
+			continue
+		}
+		escaped := strings.ReplaceAll(tok, `"`, `""`)
+		parts = append(parts, `"`+escaped+`"*`)
+	}
+	if len(parts) == 0 {
+		return "", fmt.Errorf("%w: query", ErrInvalid)
+	}
+	return strings.Join(parts, " AND "), nil
 }

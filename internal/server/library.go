@@ -8,15 +8,16 @@ import (
 )
 
 type collectionJSON struct {
-	ID        int64        `json:"id"`
-	Name      string       `json:"name"`
-	MediaKind string       `json:"mediaKind"`
-	OwnerID   int64        `json:"ownerId"`
-	OwnerName string       `json:"ownerName"`
-	CanDelete bool         `json:"canDelete"`
-	CreatedAt string       `json:"createdAt"`
-	Users     []userBrief  `json:"users,omitempty"`
-	Groups    []groupBrief `json:"groups,omitempty"`
+	ID         int64        `json:"id"`
+	Name       string       `json:"name"`
+	MediaKind  string       `json:"mediaKind"`
+	MediaKinds []string     `json:"mediaKinds"`
+	OwnerID    int64        `json:"ownerId"`
+	OwnerName  string       `json:"ownerName"`
+	CanDelete  bool         `json:"canDelete"`
+	CreatedAt  string       `json:"createdAt"`
+	Users      []userBrief  `json:"users,omitempty"`
+	Groups     []groupBrief `json:"groups,omitempty"`
 }
 
 type userBrief struct {
@@ -46,8 +47,12 @@ type historyJSON struct {
 }
 
 func collectionOut(item store.Collection, actor store.User) collectionJSON {
+	kinds := append([]string{}, item.MediaKinds...)
+	if len(kinds) == 0 && item.MediaKind != "" {
+		kinds = []string{item.MediaKind}
+	}
 	out := collectionJSON{
-		ID: item.ID, Name: item.Name, MediaKind: item.MediaKind,
+		ID: item.ID, Name: item.Name, MediaKind: item.MediaKind, MediaKinds: kinds,
 		OwnerID: item.OwnerID, OwnerName: item.OwnerName,
 		CanDelete: actor.ID == item.OwnerID, CreatedAt: item.CreatedAt,
 	}
@@ -105,14 +110,28 @@ func (s *Server) apiCreateCollection(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		Name      string `json:"name"`
-		MediaKind string `json:"mediaKind"`
+		Name       string   `json:"name"`
+		MediaKind  string   `json:"mediaKind"`
+		MediaKinds []string `json:"mediaKinds"`
 	}
 	if err := readJSON(r, &body); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid"})
 		return
 	}
-	item, err := s.store.CreateCollection(r.Context(), user, body.Name, body.MediaKind)
+	kinds := append([]string{}, body.MediaKinds...)
+	if body.MediaKind != "" {
+		found := false
+		for _, kind := range kinds {
+			if kind == body.MediaKind {
+				found = true
+				break
+			}
+		}
+		if !found {
+			kinds = append([]string{body.MediaKind}, kinds...)
+		}
+	}
+	item, err := s.store.CreateCollection(r.Context(), user, body.Name, kinds)
 	if err != nil {
 		writeStoreErr(w, err)
 		return
@@ -265,6 +284,72 @@ func (s *Server) apiUnshareCollectionGroup(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	writeJSON(w, http.StatusOK, collectionOut(item, user))
+}
+
+func (s *Server) apiBatchFiles(w http.ResponseWriter, r *http.Request) {
+	user, csrf, ok := s.requireJSON(w, r)
+	if !ok || rejectJSONCSRF(w, r, csrf) {
+		return
+	}
+	var body struct {
+		IDs          []int64 `json:"ids"`
+		Action       string  `json:"action"`
+		CollectionID *int64  `json:"collectionId"`
+	}
+	if err := readJSON(r, &body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid"})
+		return
+	}
+	if len(body.IDs) == 0 || len(body.IDs) > 100 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid"})
+		return
+	}
+	seen := map[int64]bool{}
+	ids := make([]int64, 0, len(body.IDs))
+	for _, id := range body.IDs {
+		if id <= 0 || seen[id] {
+			continue
+		}
+		seen[id] = true
+		ids = append(ids, id)
+	}
+	if len(ids) == 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid"})
+		return
+	}
+	var collectionID int64
+	if body.CollectionID != nil {
+		collectionID = *body.CollectionID
+	}
+	var removed []store.RemovedFile
+	for _, id := range ids {
+		switch body.Action {
+		case "move":
+			if _, err := s.store.SetFileCollection(r.Context(), user, id, collectionID); err != nil {
+				writeStoreErr(w, err)
+				return
+			}
+		case "copy":
+			if _, err := s.store.CopyFile(r.Context(), user, id, collectionID); err != nil {
+				writeStoreErr(w, err)
+				return
+			}
+		case "delete":
+			rel, thumb, err := s.store.DeleteFile(r.Context(), id, user)
+			if err != nil {
+				writeStoreErr(w, err)
+				return
+			}
+			if rel != "" || thumb != "" {
+				removed = append(removed, store.RemovedFile{Rel: rel, Thumb: thumb})
+			}
+		default:
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid"})
+			return
+		}
+	}
+	s.dropRemoved(removed)
+	writeJSON(w, http.StatusOK, map[string]int{"count": len(ids)})
 }
 
 func (s *Server) apiSetCollection(w http.ResponseWriter, r *http.Request) {

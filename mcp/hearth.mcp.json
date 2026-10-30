@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "hearth": {
+      "command": "/path/to/hearth/bin/hearth-mcp",
+      "args": [],
+      "env": {
+        "HEARTH_BASE_URL": "http://127.0.0.1:8080",
+        "HEARTH_USERNAME": "YOUR_USERNAME",
+        "HEARTH_PASSWORD": "YOUR_PASSWORD"
+      }
+    }
+  }
+}

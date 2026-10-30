@@ -17,7 +17,7 @@ export const errorText = {
   csrf: "请求已失效，请刷新页面",
   forbidden: "没有权限",
   not_found: "找不到",
-  invalid: "输入无效，密码至少 8 位",
+  invalid: "输入无效",
   conflict: "用户名已存在",
   last_admin: "至少保留一个可用的管理员",
   too_large: "文件超过大小限制",
@@ -60,6 +60,7 @@ export const api = {
   post: (path, json) => request(path, { method: "POST", json }),
   patch: (path, json) => request(path, { method: "PATCH", json }),
   del: (path) => request(path, { method: "DELETE" }),
+  postForm: (path, body) => request(path, { method: "POST", body }),
   upload(file, visibility, onProgress, collectionId) {
     const body = new FormData();
     body.set("visibility", visibility);

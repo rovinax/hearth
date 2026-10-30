@@ -19,11 +19,12 @@ func (s *Store) LookupSession(ctx context.Context, tokenHash string) (User, stri
 	var disabled int
 	var csrf string
 	err := s.db.QueryRowContext(ctx, `
-SELECT u.id, u.username, u.role, u.disabled, u.created_at, s.csrf_token
+SELECT u.id, u.username, u.role, u.disabled, u.created_at, u.display_name, u.bio, u.theme, u.avatar_rel, s.csrf_token
 FROM sessions s
 JOIN users u ON u.id = s.user_id
 WHERE s.token_hash = ? AND s.expires_at > ?`, tokenHash, utcStamp(time.Now())).Scan(
-		&user.ID, &user.Username, &user.Role, &disabled, &user.CreatedAt, &csrf,
+		&user.ID, &user.Username, &user.Role, &disabled, &user.CreatedAt,
+		&user.DisplayName, &user.Bio, &user.Theme, &user.AvatarRel, &csrf,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return User{}, "", ErrNotFound

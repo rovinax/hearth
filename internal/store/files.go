@@ -306,12 +306,21 @@ WHERE f.id = ?`, id).Scan(&blobID, &rel, &thumb)
 	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM files WHERE blob_id = ?`, blobID).Scan(&left); err != nil {
 		return RemovedFile{}, err
 	}
-	removed := RemovedFile{Thumb: thumb}
+	removed := RemovedFile{}
 	if left == 0 {
 		if _, err := tx.ExecContext(ctx, `DELETE FROM blobs WHERE id = ?`, blobID); err != nil {
 			return RemovedFile{}, err
 		}
 		removed.Rel = rel
+	}
+	if thumb != "" {
+		var thumbs int
+		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM files WHERE thumb_rel = ?`, thumb).Scan(&thumbs); err != nil {
+			return RemovedFile{}, err
+		}
+		if thumbs == 0 {
+			removed.Thumb = thumb
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return RemovedFile{}, err

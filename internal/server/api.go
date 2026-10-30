@@ -12,11 +12,15 @@ import (
 )
 
 type userJSON struct {
-	ID        int64  `json:"id"`
-	Username  string `json:"username"`
-	Role      string `json:"role"`
-	Disabled  bool   `json:"disabled"`
-	CreatedAt string `json:"createdAt"`
+	ID          int64  `json:"id"`
+	Username    string `json:"username"`
+	Role        string `json:"role"`
+	Disabled    bool   `json:"disabled"`
+	CreatedAt   string `json:"createdAt"`
+	DisplayName string `json:"displayName"`
+	Bio         string `json:"bio"`
+	Theme       string `json:"theme"`
+	AvatarURL   string `json:"avatarUrl,omitempty"`
 }
 
 type fileJSON struct {
@@ -48,10 +52,15 @@ type shareJSON struct {
 }
 
 func userOut(user store.User) userJSON {
-	return userJSON{
+	out := userJSON{
 		ID: user.ID, Username: user.Username, Role: user.Role,
 		Disabled: user.Disabled, CreatedAt: user.CreatedAt,
+		DisplayName: user.DisplayName, Bio: user.Bio, Theme: user.Theme,
 	}
+	if user.AvatarRel != "" {
+		out.AvatarURL = "/api/users/" + strconv.FormatInt(user.ID, 10) + "/avatar"
+	}
+	return out
 }
 
 func fileOut(file store.File, actor store.User) fileJSON {

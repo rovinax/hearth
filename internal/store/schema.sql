@@ -19,7 +19,11 @@ CREATE TABLE users (
     password_hash TEXT NOT NULL,
     role TEXT NOT NULL CHECK (role IN ('admin', 'user')),
     disabled INTEGER NOT NULL DEFAULT 0,
-    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    display_name TEXT NOT NULL DEFAULT '',
+    bio TEXT NOT NULL DEFAULT '',
+    theme TEXT NOT NULL DEFAULT '',
+    avatar_rel TEXT NOT NULL DEFAULT ''
 );
 
 CREATE TABLE sessions (
@@ -45,6 +49,7 @@ CREATE TABLE collections (
     owner_id INTEGER NOT NULL REFERENCES users(id),
     name TEXT NOT NULL,
     media_kind TEXT NOT NULL CHECK (media_kind IN ('image', 'video', 'audio', 'other')),
+    media_kinds TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 
@@ -125,3 +130,14 @@ CREATE TABLE search_history (
 );
 
 CREATE UNIQUE INDEX search_history_user_query_idx ON search_history (user_id, query);
+
+CREATE VIRTUAL TABLE files_fts USING fts5(
+    name,
+    collection_name,
+    tokenize = 'unicode61 remove_diacritics 2'
+);
+
+CREATE VIRTUAL TABLE collections_fts USING fts5(
+    name,
+    tokenize = 'unicode61 remove_diacritics 2'
+);

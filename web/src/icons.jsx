@@ -139,6 +139,18 @@ export function Icon({ name }) {
         <path d="M7 7l1 12h8l1-12" />
       </>
     ),
+    copy: (
+      <>
+        <rect x="9" y="9" width="11" height="11" rx="2" />
+        <path d="M5 15V6a2 2 0 0 1 2-2h9" />
+      </>
+    ),
+    user: (
+      <>
+        <circle cx="12" cy="8" r="3.2" />
+        <path d="M5 19a7 7 0 0 1 14 0" />
+      </>
+    ),
     logout: (
       <>
         <path d="M9 6H5a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h4" />
